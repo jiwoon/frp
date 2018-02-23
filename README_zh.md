@@ -9,6 +9,7 @@ frp 是一个可用于内网穿透的高性能的反向代理应用，支持 tcp
 ## 目录
 
 <!-- vim-markdown-toc GFM -->
+
 * [frp 的作用](#frp-的作用)
 * [开发状态](#开发状态)
 * [架构](#架构)
@@ -17,22 +18,29 @@ frp 是一个可用于内网穿透的高性能的反向代理应用，支持 tcp
     * [通过自定义域名访问部署于内网的 web 服务](#通过自定义域名访问部署于内网的-web-服务)
     * [转发 DNS 查询请求](#转发-dns-查询请求)
     * [转发 Unix域套接字](#转发-unix域套接字)
+    * [对外提供简单的文件访问服务](#对外提供简单的文件访问服务)
+    * [安全地暴露内网服务](#安全地暴露内网服务)
+    * [点对点内网穿透](#点对点内网穿透)
     * [通过 frpc 所在机器访问外网](#通过-frpc-所在机器访问外网)
 * [功能说明](#功能说明)
+    * [配置文件](#配置文件)
     * [Dashboard](#dashboard)
     * [身份验证](#身份验证)
     * [加密与压缩](#加密与压缩)
-    * [服务器端热加载配置文件](#服务器端热加载配置文件)
+    * [客户端热加载配置文件](#客户端热加载配置文件)
+    * [客户端查看代理状态](#客户端查看代理状态)
     * [特权模式](#特权模式)
         * [端口白名单](#端口白名单)
     * [TCP 多路复用](#tcp-多路复用)
-    * [支持 kcp 协议](#支持-kcp-协议)
+    * [底层通信可选 kcp 协议](#底层通信可选-kcp-协议)
     * [连接池](#连接池)
     * [修改 Host Header](#修改-host-header)
+    * [获取用户真实 IP](#获取用户真实-ip)
     * [通过密码保护你的 web 服务](#通过密码保护你的-web-服务)
     * [自定义二级域名](#自定义二级域名)
     * [URL 路由](#url-路由)
     * [通过代理连接 frps](#通过代理连接-frps)
+    * [范围端口映射](#范围端口映射)
     * [插件](#插件)
 * [开发计划](#开发计划)
 * [为 frp 做贡献](#为-frp-做贡献)
@@ -182,25 +190,15 @@ DNS 查询请求通常使用 UDP 协议，frp 支持对内网 UDP 服务的穿�
 
 5. 通过 dig 测试 UDP 包转发是否成功，预期会返回 `www.google.com` 域名的解析结果：
 
-  `dig @x.x.x.x -p 6000 www.goolge.com`
+  `dig @x.x.x.x -p 6000 www.google.com`
 
 ### 转发 Unix域套接字
 
-通过 tcp 端口访问内网的 unix域套接字(和 docker daemon 通信)。
+通过 tcp 端口访问内网的 unix域套接字(例如和 docker daemon 通信)。
 
-1. 修改 frps.ini 文件：
+frps 的部署步骤同上。
 
-  ```ini
-  # frps.ini
-  [common]
-  bind_port = 7000
-  ```
-
-2. 启动 frps：
-
-  `./frps -c ./frps.ini`
-
-3. 修改 frpc.ini 文件，启用 unix_domain_socket 插件：
+1. 启动 frpc，启用 `unix_domain_socket` 插件，配置如下：
 
   ```ini
   # frpc.ini
@@ -215,21 +213,149 @@ DNS 查询请求通常使用 UDP 协议，frp 支持对内网 UDP 服务的穿�
   plugin_unix_path = /var/run/docker.sock
   ```
 
-4. 启动 frpc：
-
-  `./frpc -c ./frpc.ini`
-
-5. 通过 curl 命令查看 docker 版本信息
+2. 通过 curl 命令查看 docker 版本信息
 
   `curl http://x.x.x.x:6000/version`
 
-### 通过 frpc 所在机器访问外网
+### 对外提供简单的文件访问服务
 
-frpc 内置了 http proxy 插件，可以使其他机器通过 frpc 的网络访问互联网。
+通过 `static_file` 插件可以对外提供一个简单的基于 HTTP 的文件访问服务。
 
 frps 的部署步骤同上。
 
-1. 修改 frpc.ini 文件，启用 http_proxy 插件：
+1. 启动 frpc，启用 `static_file` 插件，配置如下：
+
+  ```ini
+  # frpc.ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [test_static_file]
+  type = tcp
+  remote_port = 6000
+  plugin = static_file
+  # 要对外暴露的文件目录
+  plugin_local_path = /tmp/file
+  # 访问 url 中会被去除的前缀，保留的内容即为要访问的文件路径
+  plugin_strip_prefix = static
+  plugin_http_user = abc
+  plugin_http_passwd = abc
+  ```
+
+2. 通过浏览器访问 `http://x.x.x.x:6000/static/` 来查看位于 `/tmp/file` 目录下的文件，会要求输入已设置好的用户名和密码。
+
+### 安全地暴露内网服务
+
+对于某些服务来说如果直接暴露于公网上将会存在安全隐患。
+
+使用 **stcp(secret tcp)** 类型的代理可以避免让任何人都能访问到要穿透的服务，但是访问者也需要运行另外一个 frpc。
+
+以下示例将会创建一个只有自己能访问到的 ssh 服务代理。
+
+frps 的部署步骤同上。
+
+1. 启动 frpc，转发内网的 ssh 服务，配置如下，不需要指定远程端口：
+
+  ```ini
+  # frpc.ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [secret_ssh]
+  type = stcp
+  # 只有 sk 一致的用户才能访问到此服务
+  sk = abcdefg
+  local_ip = 127.0.0.1
+  local_port = 22
+  ```
+
+2. 在要访问这个服务的机器上启动另外一个 frpc，配置如下：
+
+  ```ini
+  # frpc.ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [secret_ssh_visitor]
+  type = stcp
+  # stcp 的访问者
+  role = visitor
+  # 要访问的 stcp 代理的名字
+  server_name = secret_ssh
+  sk = abcdefg
+  # 绑定本地端口用于访问 ssh 服务
+  bind_addr = 127.0.0.1
+  bind_port = 6000
+  ```
+
+3. 通过 ssh 访问内网机器，假设用户名为 test：
+
+  `ssh -oPort=6000 test@127.0.0.1`
+
+### 点对点内网穿透
+
+frp 提供了一种新的代理类型 **xtcp** 用于应对在希望传输大量数据且流量不经过服务器的场景。
+
+使用方式同 **stcp** 类似，需要在两边都部署上 frpc 用于建立直接的连接。
+
+目前处于开发的初级阶段，并不能穿透所有类型的 NAT 设备，所以穿透成功率较低。穿透失败时可以尝试 **stcp** 的方式。
+
+1. frps 除正常配置外需要额外配置一个 udp 端口用于支持该类型的客户端:
+
+  ```ini
+  bind_udp_port = 7001
+  ```
+
+2. 启动 frpc，转发内网的 ssh 服务，配置如下，不需要指定远程端口:
+
+  ```ini
+  # frpc.ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [p2p_ssh]
+  type = xtcp
+  # 只有 sk 一致的用户才能访问到此服务
+  sk = abcdefg
+  local_ip = 127.0.0.1
+  local_port = 22
+  ```
+
+3. 在要访问这个服务的机器上启动另外一个 frpc，配置如下:
+
+  ```ini
+  # frpc.ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [p2p_ssh_visitor]
+  type = xtcp
+  # xtcp 的访问者
+  role = visitor
+  # 要访问的 xtcp 代理的名字
+  server_name = p2p_ssh
+  sk = abcdefg
+  # 绑定本地端口用于访问 ssh 服务
+  bind_addr = 127.0.0.1
+  bind_port = 6000
+  ```
+
+4. 通过 ssh 访问内网机器，假设用户名为 test:
+
+  `ssh -oPort=6000 test@127.0.0.1`
+
+### 通过 frpc 所在机器访问外网
+
+frpc 内置了 http proxy 和 socks5 插件，可以使其他机器通过 frpc 的网络访问互联网。
+
+frps 的部署步骤同上。
+
+1. 启动 frpc，启用 http_proxy 或 socks5 插件(plugin 换为 socks5 即可)， 配置如下：
 
   ```ini
   # frpc.ini
@@ -243,13 +369,17 @@ frps 的部署步骤同上。
   plugin = http_proxy
   ```
 
-4. 启动 frpc：
-
-  `./frpc -c ./frpc.ini`
-
-5. 浏览器设置 http 代理地址为 `x.x.x.x:6000`，通过 frpc 机器的网络访问互联网。
+2. 浏览器设置 http 或 socks5 代理地址为 `x.x.x.x:6000`，通过 frpc 机器的网络访问互联网。
 
 ## 功能说明
+
+### 配置文件
+
+由于 frp 目前支持的功能和配置项较多，未在文档中列出的功能可以从完整的示例配置文件中发现。
+
+[frps 完整配置文件](./conf/frps_full.ini)
+
+[frpc 完整配置文件](./conf/frpc_full.ini)
 
 ### Dashboard
 
@@ -295,9 +425,30 @@ use_compression = true
 
 如果传输的报文长度较长，通过设置 `use_compression = true` 对传输内容进行压缩，可以有效减小 frpc 与 frps 之间的网络流量，加快流量转发速度，但是会额外消耗一些 cpu 资源。
 
-### 服务器端热加载配置文件
+### 客户端热加载配置文件
 
-由于从 v0.10.0 版本开始，所有 proxy 都在客户端配置，这个功能暂时移除。
+当修改了 frpc 中的代理配置，可以通过 `frpc reload` 命令来动态加载配置文件，通常会在 10 秒内完成代理的更新。
+
+启用此功能需要在 frpc 中启用 admin 端口，用于提供 API 服务。配置如下：
+
+```ini
+# frpc.ini
+[common]
+admin_addr = 127.0.0.1
+admin_port = 7400
+```
+
+之后执行重启命令：
+
+`frpc reload -c ./frpc.ini`
+
+等待一段时间后客户端会根据新的配置文件创建、更新、删除代理。
+
+**需要注意的是，[common] 中的参数除了 start 外目前无法被修改。**
+
+### 客户端查看代理状态
+
+frpc 支持通过 `frpc status -c ./frpc.ini` 命令查看代理的状态信息，此功能需要在 frpc 中配置 admin 端口。
 
 ### 特权模式
 
@@ -327,7 +478,7 @@ privilege_allow_ports 可以配置允许使用的某个指定端口或者是一�
 tcp_mux = false
 ```
 
-### 支持 kcp 协议
+### 底层通信可选 kcp 协议
 
 从 v0.12.0 版本开始，底层通信协议支持选择 kcp 协议，在弱网环境下传输效率提升明显，但是会有一些额外的流量消耗。
 
@@ -392,6 +543,12 @@ host_header_rewrite = dev.yourdomain.com
 ```
 
 原来 http 请求中的 host 字段 `test.yourdomain.com` 转发到后端服务时会被替换为 `dev.yourdomain.com`。
+
+### 获取用户真实 IP
+
+目前只有 **http** 类型的代理支持这一功能，可以通过用户请求的 header 中的 `X-Forwarded-For` 和 `X-Real-IP` 来获取用户真实 IP。
+
+**需要注意的是，目前只在每一个用户连接的第一个 HTTP 请求中添加了这两个 header。**
 
 ### 通过密码保护你的 web 服务
 
@@ -482,13 +639,32 @@ server_port = 7000
 http_proxy = http://user:pwd@192.168.1.128:8080
 ```
 
+### 范围端口映射
+
+在 frpc 的配置文件中可以指定映射多个端口，目前只支持 tcp 和 udp 的类型。
+
+这一功能通过 `range:` 段落标记来实现，客户端会解析这个标记中的配置，将其拆分成多个 proxy，每一个 proxy 以数字为后缀命名。
+
+例如要映射本地 6000-6005, 6007 这6个端口，主要配置如下：
+
+```ini
+# frpc.ini
+[range:test_tcp]
+type = tcp
+local_ip = 127.0.0.1
+local_port = 6000-6006,6007
+remote_port = 6000-6006,6007
+```
+
+实际连接成功后会创建 6 个 proxy，命名为 `test_tcp_0, test_tcp_1 ... test_tcp_5`。
+
 ### 插件
 
 默认情况下，frpc 只会转发请求到本地 tcp 或 udp 端口。
 
-插件模式是为了在客户端提供更加丰富的功能，目前内置的插件有 **unix_domain_socket**、**http_proxy**。具体使用方式请查看[使用示例](#使用示例)。
+插件模式是为了在客户端提供更加丰富的功能，目前内置的插件有 `unix_domain_socket`、`http_proxy`、`socks5`、`static_file`。具体使用方式请查看[使用示例](#使用示例)。
 
-通过 `plugin` 指定需要使用的插件，插件的配置参数都以 `plugin_` 开头。使用插件后 `local_ip` 和 `local_port 不再需要配置。
+通过 `plugin` 指定需要使用的插件，插件的配置参数都以 `plugin_` 开头。使用插件后 `local_ip` 和 `local_port` 不再需要配置。
 
 使用 **http_proxy** 插件的示例:
 
@@ -511,8 +687,6 @@ plugin_http_passwd = abc
 * frps 记录 http 请求日志。
 * frps 支持直接反向代理，类似 haproxy。
 * frpc 支持负载均衡到后端不同服务。
-* frpc 支持直接作为 webserver 访问指定静态页面。
-* 支持 udp 打洞的方式，提供两边内网机器直接通信，流量不经过服务器转发。
 * 集成对 k8s 等平台的支持。
 
 ## 为 frp 做贡献

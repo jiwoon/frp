@@ -49,32 +49,50 @@ func WrapConn(c net.Conn) Conn {
 type WrapReadWriteCloserConn struct {
 	io.ReadWriteCloser
 	log.Logger
+
+	underConn net.Conn
 }
 
-func WrapReadWriteCloserToConn(rwc io.ReadWriteCloser) Conn {
+func WrapReadWriteCloserToConn(rwc io.ReadWriteCloser, underConn net.Conn) Conn {
 	return &WrapReadWriteCloserConn{
 		ReadWriteCloser: rwc,
 		Logger:          log.NewPrefixLogger(""),
+		underConn:       underConn,
 	}
 }
 
 func (conn *WrapReadWriteCloserConn) LocalAddr() net.Addr {
+	if conn.underConn != nil {
+		return conn.underConn.LocalAddr()
+	}
 	return (*net.TCPAddr)(nil)
 }
 
 func (conn *WrapReadWriteCloserConn) RemoteAddr() net.Addr {
+	if conn.underConn != nil {
+		return conn.underConn.RemoteAddr()
+	}
 	return (*net.TCPAddr)(nil)
 }
 
 func (conn *WrapReadWriteCloserConn) SetDeadline(t time.Time) error {
+	if conn.underConn != nil {
+		return conn.underConn.SetDeadline(t)
+	}
 	return &net.OpError{Op: "set", Net: "wrap", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
 func (conn *WrapReadWriteCloserConn) SetReadDeadline(t time.Time) error {
+	if conn.underConn != nil {
+		return conn.underConn.SetReadDeadline(t)
+	}
 	return &net.OpError{Op: "set", Net: "wrap", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
 func (conn *WrapReadWriteCloserConn) SetWriteDeadline(t time.Time) error {
+	if conn.underConn != nil {
+		return conn.underConn.SetWriteDeadline(t)
+	}
 	return &net.OpError{Op: "set", Net: "wrap", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
@@ -155,4 +173,39 @@ func (sc *SharedConn) WriteBuff(buffer []byte) (err error) {
 	sc.buf.Reset()
 	_, err = sc.buf.Write(buffer)
 	return err
+}
+
+type StatsConn struct {
+	Conn
+
+	totalRead  int64
+	totalWrite int64
+	statsFunc  func(totalRead, totalWrite int64)
+}
+
+func WrapStatsConn(conn Conn, statsFunc func(total, totalWrite int64)) *StatsConn {
+	return &StatsConn{
+		Conn:      conn,
+		statsFunc: statsFunc,
+	}
+}
+
+func (statsConn *StatsConn) Read(p []byte) (n int, err error) {
+	n, err = statsConn.Conn.Read(p)
+	statsConn.totalRead += int64(n)
+	return
+}
+
+func (statsConn *StatsConn) Write(p []byte) (n int, err error) {
+	n, err = statsConn.Conn.Write(p)
+	statsConn.totalWrite += int64(n)
+	return
+}
+
+func (statsConn *StatsConn) Close() (err error) {
+	err = statsConn.Conn.Close()
+	if statsConn.statsFunc != nil {
+		statsConn.statsFunc(statsConn.totalRead, statsConn.totalWrite)
+	}
+	return
 }

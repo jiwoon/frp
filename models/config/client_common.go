@@ -29,13 +29,18 @@ var ClientCommonCfg *ClientCommonConf
 type ClientCommonConf struct {
 	ConfigFile        string
 	ServerAddr        string
-	ServerPort        int64
+	ServerPort        int
+	ServerUdpPort     int // this is specified by login response message from frps
 	HttpProxy         string
 	LogFile           string
 	LogWay            string
 	LogLevel          string
 	LogMaxDays        int64
 	PrivilegeToken    string
+	AdminAddr         string
+	AdminPort         int
+	AdminUser         string
+	AdminPwd          string
 	PoolCount         int
 	TcpMux            bool
 	User              string
@@ -51,12 +56,17 @@ func GetDeaultClientCommonConf() *ClientCommonConf {
 		ConfigFile:        "./frpc.ini",
 		ServerAddr:        "0.0.0.0",
 		ServerPort:        7000,
+		ServerUdpPort:     0,
 		HttpProxy:         "",
 		LogFile:           "console",
 		LogWay:            "console",
 		LogLevel:          "info",
 		LogMaxDays:        3,
 		PrivilegeToken:    "",
+		AdminAddr:         "127.0.0.1",
+		AdminPort:         0,
+		AdminUser:         "",
+		AdminPwd:          "",
 		PoolCount:         1,
 		TcpMux:            true,
 		User:              "",
@@ -83,7 +93,12 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 
 	tmpStr, ok = conf.Get("common", "server_port")
 	if ok {
-		cfg.ServerPort, _ = strconv.ParseInt(tmpStr, 10, 64)
+		v, err = strconv.ParseInt(tmpStr, 10, 64)
+		if err != nil {
+			err = fmt.Errorf("Parse conf error: invalid server_port")
+			return
+		}
+		cfg.ServerPort = int(v)
 	}
 
 	tmpStr, ok = conf.Get("common", "http_proxy")
@@ -111,12 +126,39 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 
 	tmpStr, ok = conf.Get("common", "log_max_days")
 	if ok {
-		cfg.LogMaxDays, _ = strconv.ParseInt(tmpStr, 10, 64)
+		if v, err = strconv.ParseInt(tmpStr, 10, 64); err == nil {
+			cfg.LogMaxDays = v
+		}
 	}
 
 	tmpStr, ok = conf.Get("common", "privilege_token")
 	if ok {
 		cfg.PrivilegeToken = tmpStr
+	}
+
+	tmpStr, ok = conf.Get("common", "admin_addr")
+	if ok {
+		cfg.AdminAddr = tmpStr
+	}
+
+	tmpStr, ok = conf.Get("common", "admin_port")
+	if ok {
+		if v, err = strconv.ParseInt(tmpStr, 10, 64); err == nil {
+			cfg.AdminPort = int(v)
+		} else {
+			err = fmt.Errorf("Parse conf error: invalid admin_port")
+			return
+		}
+	}
+
+	tmpStr, ok = conf.Get("common", "admin_user")
+	if ok {
+		cfg.AdminUser = tmpStr
+	}
+
+	tmpStr, ok = conf.Get("common", "admin_pwd")
+	if ok {
+		cfg.AdminPwd = tmpStr
 	}
 
 	tmpStr, ok = conf.Get("common", "pool_count")
@@ -145,7 +187,7 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 	if ok {
 		proxyNames := strings.Split(tmpStr, ",")
 		for _, name := range proxyNames {
-			cfg.Start[name] = struct{}{}
+			cfg.Start[strings.TrimSpace(name)] = struct{}{}
 		}
 	}
 
@@ -169,7 +211,7 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 	if ok {
 		v, err = strconv.ParseInt(tmpStr, 10, 64)
 		if err != nil {
-			err = fmt.Errorf("Parse conf error: heartbeat_timeout is incorrect")
+			err = fmt.Errorf("Parse conf error: invalid heartbeat_timeout")
 			return
 		} else {
 			cfg.HeartBeatTimeout = v
@@ -180,7 +222,7 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 	if ok {
 		v, err = strconv.ParseInt(tmpStr, 10, 64)
 		if err != nil {
-			err = fmt.Errorf("Parse conf error: heartbeat_interval is incorrect")
+			err = fmt.Errorf("Parse conf error: invalid heartbeat_interval")
 			return
 		} else {
 			cfg.HeartBeatInterval = v
@@ -188,12 +230,12 @@ func LoadClientCommonConf(conf ini.File) (cfg *ClientCommonConf, err error) {
 	}
 
 	if cfg.HeartBeatInterval <= 0 {
-		err = fmt.Errorf("Parse conf error: heartbeat_interval is incorrect")
+		err = fmt.Errorf("Parse conf error: invalid heartbeat_interval")
 		return
 	}
 
 	if cfg.HeartBeatTimeout < cfg.HeartBeatInterval {
-		err = fmt.Errorf("Parse conf error: heartbeat_timeout is incorrect, heartbeat_timeout is less than heartbeat_interval")
+		err = fmt.Errorf("Parse conf error: invalid heartbeat_timeout, heartbeat_timeout is less than heartbeat_interval")
 		return
 	}
 	return
