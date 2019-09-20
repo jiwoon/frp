@@ -20,8 +20,9 @@ import (
 	"net"
 	"sync"
 
-	"github.com/fatedier/frp/utils/errors"
 	frpNet "github.com/fatedier/frp/utils/net"
+
+	"github.com/fatedier/golib/errors"
 )
 
 // Creators is used for create plugins to handle connections.
@@ -45,7 +46,7 @@ func Create(name string, params map[string]string) (p Plugin, err error) {
 
 type Plugin interface {
 	Name() string
-	Handle(conn io.ReadWriteCloser, realConn frpNet.Conn)
+	Handle(conn io.ReadWriteCloser, realConn frpNet.Conn, extraBufToLocal []byte)
 	Close() error
 }
 
