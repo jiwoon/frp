@@ -20,6 +20,7 @@ import (
 	"github.com/fatedier/beego/logs"
 )
 
+// Log is the under log object
 var Log *logs.BeeLogger
 
 func init() {
@@ -33,6 +34,7 @@ func InitLog(logWay string, logFile string, logLevel string, maxdays int64) {
 	SetLogLevel(logLevel)
 }
 
+// SetLogFile to configure log params
 // logWay: file or console
 func SetLogFile(logWay string, logFile string, maxdays int64) {
 	if logWay == "console" {
@@ -43,6 +45,7 @@ func SetLogFile(logWay string, logFile string, maxdays int64) {
 	}
 }
 
+// SetLogLevel set log level, default is warning
 // value: error, warning, info, debug, trace
 func SetLogLevel(logLevel string) {
 	level := 4 // warning
@@ -85,9 +88,10 @@ func Trace(format string, v ...interface{}) {
 	Log.Trace(format, v...)
 }
 
-// Logger
+// Logger is the log interface
 type Logger interface {
 	AddLogPrefix(string)
+	GetPrefixStr() string
 	GetAllPrefix() []string
 	ClearLogPrefix()
 	Error(string, ...interface{})
@@ -117,6 +121,10 @@ func (pl *PrefixLogger) AddLogPrefix(prefix string) {
 
 	pl.prefix += "[" + prefix + "] "
 	pl.allPrefix = append(pl.allPrefix, prefix)
+}
+
+func (pl *PrefixLogger) GetPrefixStr() string {
+	return pl.prefix
 }
 
 func (pl *PrefixLogger) GetAllPrefix() []string {
